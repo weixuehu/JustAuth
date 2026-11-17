@@ -9,10 +9,14 @@ import me.zhyd.oauth.enums.AuthUserGender;
 import me.zhyd.oauth.enums.scope.AuthFacebookScope;
 import me.zhyd.oauth.exception.AuthException;
 import me.zhyd.oauth.model.AuthCallback;
+import me.zhyd.oauth.model.AuthResponse;
 import me.zhyd.oauth.model.AuthToken;
 import me.zhyd.oauth.model.AuthUser;
 import me.zhyd.oauth.utils.AuthScopeUtils;
+import me.zhyd.oauth.utils.FacebookLimitedLoginVerifier;
 import me.zhyd.oauth.utils.GlobalAuthUtils;
+import me.zhyd.oauth.utils.HttpUtils;
+import me.zhyd.oauth.utils.StringUtils;
 import me.zhyd.oauth.utils.UrlBuilder;
 
 /**
@@ -23,12 +27,95 @@ import me.zhyd.oauth.utils.UrlBuilder;
  */
 public class AuthFacebookRequest extends AuthDefaultRequest {
 
+    private static final String DEBUG_TOKEN_URL = "https://graph.facebook.com/debug_token";
+
     public AuthFacebookRequest(AuthConfig config) {
         super(config, AuthDefaultSource.FACEBOOK);
     }
 
     public AuthFacebookRequest(AuthConfig config, AuthStateCache authStateCache) {
         super(config, AuthDefaultSource.FACEBOOK, authStateCache);
+    }
+
+    /**
+     * 使用 Facebook Limited Login（iOS SDK）返回的 authenticationToken 登录
+     * <p>
+     * Limited Login 模式下 Facebook 不返回 access token，而是返回一个 OIDC JWT，
+     * 服务端需要校验签名（RS256）、iss、aud、exp 后才能信任其中的用户身份。
+     * <p>
+     * 仅做 App 端登录时，可在 {@link AuthConfig} 中设置 {@code ignoreCheckRedirectUri(true)} 并留空 redirectUri。
+     *
+     * @param authenticationToken Facebook SDK 返回的 JWT
+     * @return 登录结果
+     * @since 1.16.8
+     */
+    public AuthResponse<AuthUser> loginByAuthenticationToken(String authenticationToken) {
+        try {
+            JSONObject claims = new FacebookLimitedLoginVerifier(config.getClientId(), authStateCache, config.getHttpConfig())
+                .verify(authenticationToken);
+            return AuthResponse.<AuthUser>builder()
+                .code(AuthResponseStatus.SUCCESS.getCode())
+                .data(AuthUser.builder()
+                    .rawUserInfo(claims)
+                    .uuid(claims.getString("sub"))
+                    .username(claims.getString("name"))
+                    .nickname(claims.getString("name"))
+                    .avatar(claims.getString("picture"))
+                    .email(claims.getString("email"))
+                    .gender(AuthUserGender.UNKNOWN)
+                    .token(AuthToken.builder().idToken(authenticationToken).build())
+                    .source(source.toString())
+                    .build())
+                .build();
+        } catch (Exception e) {
+            return this.responseError(e);
+        }
+    }
+
+    /**
+     * 使用 App 端已经拿到的 Facebook user access token 登录
+     * <p>
+     * 先用 app access token（{@code clientId|clientSecret}）调用 {@code debug_token} 校验该 token 是否有效、
+     * 是否属于当前应用，校验通过后再调用 Graph API 获取用户信息。
+     * <p>
+     * 仅做 App 端登录时，可在 {@link AuthConfig} 中设置 {@code ignoreCheckRedirectUri(true)} 并留空 redirectUri。
+     *
+     * @param accessToken Facebook user access token
+     * @return 登录结果
+     * @since 1.16.8
+     */
+    public AuthResponse<AuthUser> loginByAccessToken(String accessToken) {
+        try {
+            if (StringUtils.isEmpty(accessToken)) {
+                throw new AuthException(AuthResponseStatus.ILLEGAL_TOKEN, source);
+            }
+            JSONObject data = this.debugToken(accessToken).getJSONObject("data");
+            if (null == data || !data.getBooleanValue("is_valid") || !config.getClientId().equals(data.getString("app_id"))) {
+                throw new AuthException(AuthResponseStatus.ILLEGAL_TOKEN, source);
+            }
+            AuthUser authUser = this.getUserInfo(AuthToken.builder().accessToken(accessToken).build());
+            return AuthResponse.<AuthUser>builder()
+                .code(AuthResponseStatus.SUCCESS.getCode())
+                .data(authUser)
+                .build();
+        } catch (Exception e) {
+            return this.responseError(e);
+        }
+    }
+
+    /**
+     * 调用 Facebook debug_token 接口校验 access token
+     *
+     * @param accessToken 待校验的 user access token
+     * @return debug_token 的响应内容
+     */
+    private JSONObject debugToken(String accessToken) {
+        String url = UrlBuilder.fromBaseUrl(DEBUG_TOKEN_URL)
+            .queryParam("input_token", accessToken)
+            .queryParam("access_token", config.getClientId() + "|" + config.getClientSecret())
+            .build(true);
+        String response = new HttpUtils(config.getHttpConfig()).get(url).getBody();
+        return JSONObject.parseObject(response);
     }
 
     @Override
@@ -93,7 +180,10 @@ public class AuthFacebookRequest extends AuthDefaultRequest {
     protected void checkConfig(AuthConfig config) {
         super.checkConfig(config);
         // facebook的回调地址必须为https的链接
-        if (AuthDefaultSource.FACEBOOK == source && !GlobalAuthUtils.isHttpsProtocol(config.getRedirectUri())) {
+        // App 端登录（Limited Login / access token）不依赖回调地址，允许不配置 redirectUri
+        if (AuthDefaultSource.FACEBOOK == source
+            && StringUtils.isNotEmpty(config.getRedirectUri())
+            && !GlobalAuthUtils.isHttpsProtocol(config.getRedirectUri())) {
             // Facebook's redirect uri must use the HTTPS protocol
             throw new AuthException(AuthResponseStatus.ILLEGAL_REDIRECT_URI, source);
         }

@@ -483,6 +483,39 @@ public enum AuthDefaultSource implements AuthSource {
         }
     },
     /**
+     * TikTok
+     *
+     * <a href="https://developers.tiktok.com/doc/login-kit-web">Login Kit for Web</a>
+     *
+     * @since 1.16.8
+     */
+    TIKTOK {
+        @Override
+        public String authorize() {
+            return "https://www.tiktok.com/v2/auth/authorize/";
+        }
+
+        @Override
+        public String accessToken() {
+            return "https://open.tiktokapis.com/v2/oauth/token/";
+        }
+
+        @Override
+        public String userInfo() {
+            return "https://open.tiktokapis.com/v2/user/info/";
+        }
+
+        @Override
+        public String refresh() {
+            return "https://open.tiktokapis.com/v2/oauth/token/";
+        }
+
+        @Override
+        public Class<? extends AuthDefaultRequest> getTargetClass() {
+            return AuthTiktokRequest.class;
+        }
+    },
+    /**
      * 领英
      */
     LINKEDIN {

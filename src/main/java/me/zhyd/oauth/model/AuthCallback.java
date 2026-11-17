@@ -70,6 +70,17 @@ public class AuthCallback implements Serializable {
      */
     private String error;
 
+    /**
+     * PKCE 模式下的 code_verifier
+     * <p>
+     * 服务端应用开启 {@code AuthConfig#pkce} 后，JustAuth 会在生成授权地址时自动生成 code_verifier
+     * 并以 state 为 key 缓存，回调时自动取回，无需设置该值；
+     * App 端等无法依赖 state 缓存的场景，可以直接把 code_verifier 传进来。
+     *
+     * @since 1.16.8
+     */
+    private String codeVerifier;
+
     public String getCode() {
         return StringUtils.isEmpty(code) ? auth_code : code;
     }
